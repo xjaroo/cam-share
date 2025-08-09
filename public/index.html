@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Tech ↔ Supervisor (WebRTC)</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; margin: 24px; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
+    video { width: 100%; background: #111; border-radius: 14px; }
+    fieldset { border: 1px solid #ddd; border-radius: 12px; padding: 12px; }
+    .bar { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
+    input, button { padding: 10px 12px; border-radius: 10px; border: 1px solid #ccc; }
+    button { cursor: pointer; }
+    .tag { font-size: 12px; padding: 4px 8px; background: #eef; border-radius: 999px; }
+  </style>
+</head>
+<body>
+  <h1>Live Cam Share: Tech ↔ Supervisor</h1>
+  <p>Enter the same Room ID on both sides. One clicks <b>Start as Tech</b>, the other clicks <b>Start as Supervisor</b>.</p>
+
+  <fieldset>
+    <legend>Room</legend>
+    <div class="bar">
+      <input id="roomId" placeholder="Room ID (e.g. job-123)" />
+      <button id="joinTech">Start as Tech (camera on)</button>
+      <button id="joinSup">Start as Supervisor (view & talk)</button>
+      <span class="tag" id="status">idle</span>
+    </div>
+    <div class="bar">
+      <button id="toggleCam" disabled>Toggle Camera</button>
+      <button id="toggleMic" disabled>Toggle Mic</button>
+      <button id="hangup" disabled>Hang Up</button>
+    </div>
+  </fieldset>
+
+  <div class="row">
+    <div>
+      <h3>Local</h3>
+      <video id="localVideo" autoplay playsinline muted></video>
+      <div id="localInfo" class="tag">no stream</div>
+    </div>
+    <div>
+      <h3>Remote</h3>
+      <video id="remoteVideo" autoplay playsinline></video>
+      <div id="remoteInfo" class="tag">waiting...</div>
+    </div>
+  </div>
+
+  <script>
+    // Config
+    const SIGNAL_URL = (location.origin.replace(/^http/, 'ws')); // ws://localhost:3000
+    const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
+
+    // UI Elts
+    const roomInput = document.getElementById('roomId');
+    const joinTechBtn = document.getElementById('joinTech');
+    const joinSupBtn  = document.getElementById('joinSup');
+    const statusTag   = document.getElementById('status');
+    const toggleCam   = document.getElementById('toggleCam');
+    const toggleMic   = document.getElementById('toggleMic');
+    const hangupBtn   = document.getElementById('hangup');
+    const localVideo  = document.getElementById('localVideo');
+    const remoteVideo = document.getElementById('remoteVideo');
+    const localInfo   = document.getElementById('localInfo');
+    const remoteInfo  = document.getElementById('remoteInfo');
+
+    // State
+    let role = null; // 'tech' | 'sup'
+    let ws, pc, localStream;
+
+    function setStatus(s) { statusTag.textContent = s; }
+    function enableControls(on) {
+      toggleCam.disabled = !on; toggleMic.disabled = !on; hangupBtn.disabled = !on;
+    }
+
+    // Signaling
+    function wsSend(obj) { ws && ws.readyState === 1 && ws.send(JSON.stringify(obj)); }
+
+    async function join(asRole) {
+      role = asRole;
+      const room = roomInput.value.trim();
+      if (!room) { alert('Enter a Room ID'); return; }
+      setStatus('connecting...');
+      ws = new WebSocket(SIGNAL_URL.replace(/^http/, 'ws'));
+      ws.onopen = () => {
+        wsSend({ type: 'join', room });
+        setStatus('joined room');
+      };
+      ws.onmessage = async (ev) => {
+        const msg = JSON.parse(ev.data);
+        if (msg.type === 'joined') return;
+
+        if (msg.type === 'offer' && role === 'sup') {
+          await ensurePC();
+          await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+          wsSend({ type: 'answer', sdp: answer });
+        } else if (msg.type === 'answer' && role === 'tech') {
+          await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+        } else if (msg.type === 'ice' && pc) {
+          try { await pc.addIceCandidate(msg.candidate); } catch (e) {
+            console.warn('ICE add error', e);
+          }
+        }
+      };
+      ws.onclose = cleanup;
+
+      // Tech captures media immediately; Supervisor can also capture mic for talk back
+      if (role === 'tech') {
+        await startMedia({ video: true, audio: true });
+        await startCall();
+      } else {
+        // Supervisor: mic on, no camera (change to {video:true,audio:true} if you want both)
+        await startMedia({ video: false, audio: true });
+      }
+    }
+
+    async function ensurePC() {
+      if (pc) return;
+      pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+      pc.onicecandidate = (e) => {
+        if (e.candidate) wsSend({ type: 'ice', candidate: e.candidate });
+      };
+      pc.ontrack = (e) => {
+        remoteVideo.srcObject = e.streams[0];
+        remoteInfo.textContent = 'remote stream live';
+      };
+      // Add local tracks if present
+      if (localStream) {
+        localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+      }
+    }
+
+    async function startMedia(constraints) {
+      localStream = await navigator.mediaDevices.getUserMedia(constraints);
+      localVideo.srcObject = localStream;
+      localInfo.textContent = [
+        constraints.video ? 'camera on' : 'camera off',
+        constraints.audio ? 'mic on'    : 'mic off'
+      ].join(' · ');
+      enableControls(true);
+    }
+
+    async function startCall() {
+      await ensurePC();
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      wsSend({ type: 'offer', sdp: offer });
+      setStatus('calling...');
+    }
+
+    // UI handlers
+    joinTechBtn.onclick = () => join('tech');
+    joinSupBtn.onclick  = () => join('sup');
+
+    toggleCam.onclick = () => {
+      if (!localStream) return;
+      const videoTrack = localStream.getVideoTracks()[0];
+      if (!videoTrack) return;
+      videoTrack.enabled = !videoTrack.enabled;
+      toggleCam.textContent = videoTrack.enabled ? 'Toggle Camera' : 'Turn Camera Back On';
+      localInfo.textContent = `${videoTrack.enabled ? 'camera on' : 'camera off'} · ${localStream.getAudioTracks()[0]?.enabled ? 'mic on' : 'mic off'}`;
+    };
+
+    toggleMic.onclick = () => {
+      if (!localStream) return;
+      const audioTrack = localStream.getAudioTracks()[0];
+      if (!audioTrack) return;
+      audioTrack.enabled = !audioTrack.enabled;
+      toggleMic.textContent = audioTrack.enabled ? 'Toggle Mic' : 'Unmute Mic';
+      const vOn = localStream.getVideoTracks()[0]?.enabled;
+      localInfo.textContent = `${vOn ? 'camera on' : 'camera off'} · ${audioTrack.enabled ? 'mic on' : 'mic off'}`;
+    };
+
+    hangupBtn.onclick = () => {
+      cleanup();
+      setStatus('hung up');
+    };
+
+    function cleanup() {
+      enableControls(false);
+      if (pc) { pc.getSenders().forEach(s => s.track && s.track.stop()); pc.close(); pc = null; }
+      if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
+      localVideo.srcObject = null;
+      // keep remote video to show last frame, or clear:
+      // remoteVideo.srcObject = null;
+      if (ws && ws.readyState === 1) ws.close();
+      ws = null; role = null;
+      localInfo.textContent = 'no stream';
+    }
+  </script>
+</body>
+</html>
