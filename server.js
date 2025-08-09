@@ -1,5 +1,5 @@
-// Simple WebSocket signaling server for WebRTC rooms
-// Run: node server.js
+// Minimal WebSocket signaling server for 1-to-1 WebRTC
+// Run: npm install && npm start
 
 const express = require('express');
 const http = require('http');
@@ -13,32 +13,35 @@ const rooms = new Map(); // roomId -> Set(ws)
 
 app.use(express.static(path.join(__dirname, 'public')));
 
+function broadcast(roomId, data, except) {
+  const peers = rooms.get(roomId) || new Set();
+  for (const client of peers) {
+    if (client !== except && client.readyState === WebSocket.OPEN) {
+      client.send(JSON.stringify(data));
+    }
+  }
+}
+
 wss.on('connection', (ws) => {
   let joinedRoom = null;
 
   ws.on('message', (msg) => {
-    try {
-      const data = JSON.parse(msg);
-      if (data.type === 'join' && data.room) {
-        joinedRoom = data.room;
-        if (!rooms.has(joinedRoom)) rooms.set(joinedRoom, new Set());
-        rooms.get(joinedRoom).add(ws);
-        // acknowledge
-        ws.send(JSON.stringify({ type: 'joined', room: joinedRoom }));
-        return;
-      }
+    let data;
+    try { data = JSON.parse(msg); } catch(e){ return; }
 
-      // relay signaling messages to others in the same room
-      if (joinedRoom && ['offer','answer','ice'].includes(data.type)) {
-        const peers = rooms.get(joinedRoom) || new Set();
-        for (const client of peers) {
-          if (client !== ws && client.readyState === WebSocket.OPEN) {
-            client.send(JSON.stringify(data));
-          }
-        }
-      }
-    } catch (e) {
-      console.error('Bad message', e);
+    if (data.type === 'join' && data.room) {
+      joinedRoom = data.room;
+      if (!rooms.has(joinedRoom)) rooms.set(joinedRoom, new Set());
+      rooms.get(joinedRoom).add(ws);
+      console.log(`[join] ${joinedRoom} peers=${rooms.get(joinedRoom).size}`);
+      // tell peer how many are in the room
+      ws.send(JSON.stringify({ type: 'joined', peers: rooms.get(joinedRoom).size }));
+      broadcast(joinedRoom, { type: 'peer-joined', peers: rooms.get(joinedRoom).size }, ws);
+      return;
+    }
+
+    if (joinedRoom && ['offer','answer','ice'].includes(data.type)) {
+      broadcast(joinedRoom, data, ws);
     }
   });
 
@@ -46,11 +49,10 @@ wss.on('connection', (ws) => {
     if (joinedRoom && rooms.has(joinedRoom)) {
       rooms.get(joinedRoom).delete(ws);
       if (rooms.get(joinedRoom).size === 0) rooms.delete(joinedRoom);
+      else broadcast(joinedRoom, { type: 'peer-left', peers: rooms.get(joinedRoom).size }, null);
     }
   });
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log(`Signaling + static server running at http://localhost:${PORT}`);
-});
+server.listen(PORT, () => console.log(`Server at http://localhost:${PORT}`));
