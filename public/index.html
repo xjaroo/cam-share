@@ -1,328 +1,626 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Two-way WebRTC Call</title>
-<style>
-  :root { --pad: 16px; }
-  body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; margin: var(--pad); }
-  .controls { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
-  input, button { padding: 10px 12px; border-radius: 10px; border: 1px solid #ccc; }
-  button { cursor: pointer; }
-  .stage { position: relative; width: 100%; aspect-ratio: 16/9; background: #000; border-radius: 16px; overflow: hidden; }
-  video.big { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
-  video.pip { position: absolute; width: 28%; aspect-ratio: 16/9; bottom: 12px; right: 12px; border-radius: 12px; border: 2px solid rgba(255,255,255,0.6); box-shadow: 0 8px 30px rgba(0,0,0,0.35); object-fit: cover; cursor: grab; touch-action: none; }
-  .tag { display:inline-block; font-size: 12px; padding: 4px 8px; background: #eef; border-radius: 999px; }
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Two-way WebRTC Call</title>
+    <style>
+      :root {
+        --pad: 16px;
+      }
+      body {
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial;
+        margin: var(--pad);
+      }
+      .controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin: 12px 0;
+      }
+      input,
+      button {
+        padding: 10px 12px;
+        border-radius: 10px;
+        border: 1px solid #ccc;
+      }
+      button {
+        cursor: pointer;
+      }
+      .stage {
+        position: relative;
+        width: 100%;
+        aspect-ratio: 16/9;
+        background: #000;
+        border-radius: 16px;
+        overflow: hidden;
+      }
+      video.big {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+      }
+      video.pip {
+        position: absolute;
+        width: 28%;
+        aspect-ratio: 16/9;
+        bottom: 12px;
+        right: 12px;
+        border-radius: 12px;
+        border: 2px solid rgba(255, 255, 255, 0.6);
+        box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
+        object-fit: cover;
+        cursor: grab;
+        touch-action: none;
+      }
+      .tag {
+        display: inline-block;
+        font-size: 12px;
+        padding: 4px 8px;
+        background: #eef;
+        border-radius: 999px;
+      }
 
-  .blackout { position: fixed; inset: 0; background: #000; z-index: 9999; display: none; }
-  .blackout.show { display: block; }
-</style>
-</head>
-<body> 
-  <div class="controls">
-    <input id="room" placeholder="Room ID (e.g. demo-1)" />
-    <button id="joinBtn">Join</button>
-    <button id="switchBtn" disabled>Switch Camera</button>
-    <button id="hangBtn" disabled>Hang Up</button>
-    <button id="swapBtn" disabled>Swap Views</button>    
-    <span id="status" class="tag">Idle</span>
-  </div>
+      .blackout {
+        position: fixed;
+        inset: 0;
+        background: #000;
+        z-index: 9999;
+        display: none;
+      }
+      .blackout.show {
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="controls">
+      <input id="room" placeholder="Room ID (e.g. demo-1)" />
+      <!-- <button id="newRoomBtn" type="button">New Room</button>
+      <button id="copyBtn" type="button">Copy Link</button> -->
+      <button id="joinBtn">Join</button>
+      <button id="switchBtn">Switch Camera</button>
+      <!-- <button id="toggleCamBtn">Toggle Cam</button> -->
+      <!-- <button id="toggleMicBtn">Toggle Mic</button>
+      <button id="hangBtn" disabled>Hang Up</button>
+      <button id="swapBtn" disabled>Swap Views</button>
+      <button id="pipBtn" disabled>PiP</button>
+      <button id="blackoutBtn" disabled>Screen Off</button>
+      <button id="fsLocalBtn" disabled>FS Local</button>
+      <button id="fsRemoteBtn" disabled>FS Remote</button> -->
+      <span id="status" class="tag">Idle</span>
+    </div>
 
-  
-  <div id="videoStage" class="stage">
-    <video id="remoteVideo" class="big" autoplay playsinline></video>
-    <video id="localVideo" class="pip" autoplay playsinline muted></video>
-  </div>
+    <div id="videoStage" class="stage">
+      <video id="remoteVideo" class="big" autoplay playsinline></video>
+      <video id="localVideo" class="pip" autoplay playsinline muted></video>
+    </div>
 
-<script>
+    <script>
+      const SIGNAL_URL = location.origin.replace(/^http/, "ws");
+      const ICE_SERVERS = [{ urls: "stun:stun.l.google.com:19302" }];
 
-const SIGNAL_URL = location.origin.replace(/^http/, 'ws');
-const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
+      let ws, pc, localStream;
+      let usingFront = true; // true => 'user' (front), false => 'environment' (back)
 
-let ws, pc, localStream;
-let usingFront = true; // true => 'user' (front), false => 'environment' (back)
+      const statusEl = document.getElementById("status");
+      const newRoomBtn = document.getElementById("newRoomBtn");
+      const copyBtn = document.getElementById("copyBtn");
+      const joinBtn = document.getElementById("joinBtn");
+      const switchBtn = document.getElementById("switchBtn");
+      const toggleCamBtn = document.getElementById("toggleCamBtn");
+      const toggleMicBtn = document.getElementById("toggleMicBtn");
+      const hangBtn = document.getElementById("hangBtn");
+      const swapBtn = document.getElementById("swapBtn");
+      const pipBtn = document.getElementById("pipBtn");
+      const blackoutBtn = document.getElementById("blackoutBtn");
+      const fsLocalBtn = document.getElementById("fsLocalBtn");
+      const fsRemoteBtn = document.getElementById("fsRemoteBtn");
+      const blackout = document.getElementById("blackout");
+      const roomInput = document.getElementById("room");
+      const localVideo = document.getElementById("localVideo");
+      const remoteVideo = document.getElementById("remoteVideo");
 
-const statusEl = document.getElementById('status');
-const joinBtn = document.getElementById('joinBtn');
-const switchBtn = document.getElementById('switchBtn');
-const toggleCamBtn = document.getElementById('toggleCam');
-const toggleMicBtn = document.getElementById('toggleMic');
-const hangBtn = document.getElementById('hangBtn');
-const swapBtn = document.getElementById('swapBtn');
-const pipBtn = document.getElementById('pipBtn');
-const blackoutBtn = document.getElementById('blackoutBtn');
-const fsLocalBtn = document.getElementById('fsLocalBtn');
-const fsRemoteBtn = document.getElementById('fsRemoteBtn');
-const blackout = document.getElementById('blackout');
-const roomInput = document.getElementById('room');
-const localVideo = document.getElementById('localVideo');
-const remoteVideo = document.getElementById('remoteVideo');
+      function setStatus(s) {
+        statusEl.textContent = s;
+      }
 
-function setStatus(s){ statusEl.textContent = s; }
-function enableCallControls(on){
-  blackoutBtn.disabled = !on; fsLocalBtn.disabled = !on; fsRemoteBtn.disabled = !on; swapBtn.disabled = !on; pipBtn.disabled = !on;
+      function generateUUID() {
+        if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+        // RFC4122 v4 fallback
+        return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(
+          /[xy]/g,
+          function (c) {
+            const r = (Math.random() * 16) | 0,
+              v = c === "x" ? r : (r & 0x3) | 0x8;
+            return v.toString(16);
+          }
+        );
+      }
 
-  switchBtn.disabled = !on; toggleCamBtn.disabled = !on; toggleMicBtn.disabled = !on; hangBtn.disabled = !on;
-}
+      function buildRoomLink(roomId) {
+        const url = new URL(window.location.href);
+        url.searchParams.set("room", roomId);
+        return url.toString();
+      }
 
-async function getMediaStream() {
-  // Try requested facingMode; if it fails, fall back to default camera.
-  const constraints = { video: { facingMode: usingFront ? 'user' : 'environment' }, audio: true };
-  try {
-    return await navigator.mediaDevices.getUserMedia(constraints);
-  } catch (e) {
-    console.warn('FacingMode failed, falling back to default camera', e);
-    return await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-  }
-}
+      async function copyTextToClipboard(text) {
+        try {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(text);
+            return true;
+          }
+        } catch {}
+        // Fallback for older browsers without inline styles
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.setAttribute("readonly", "");
+        ta.hidden = true;
+        document.body.appendChild(ta);
+        ta.select();
+        const ok = document.execCommand("copy");
+        document.body.removeChild(ta);
+        return ok;
+      }
+      function enableCallControls(on) {
+        // Enable/disable call-related controls
+        if (blackoutBtn) blackoutBtn.disabled = !on;
+        if (fsLocalBtn) fsLocalBtn.disabled = !on;
+        if (fsRemoteBtn) fsRemoteBtn.disabled = !on;
+        if (swapBtn) swapBtn.disabled = !on;
+        if (pipBtn) pipBtn.disabled = !on;
+        if (hangBtn) hangBtn.disabled = !on;
 
-async function ensurePC() {
-  if (pc) return;
-  pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
-  pc.onicecandidate = (e) => {
-    if (e.candidate) ws?.send(JSON.stringify({ type: 'ice', candidate: e.candidate }));
-  };
-  pc.ontrack = (e) => { remoteVideo.srcObject = e.streams[0]; };
-  if (!localStream) {
-    localStream = await getMediaStream();
-    localVideo.srcObject = localStream;
-  }
-  // Add tracks (if not already added)
-  localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
-  enableCallControls(true);
-}
+        // Camera and mic controls should be available when we have a local stream
+        if (toggleCamBtn) toggleCamBtn.disabled = !localStream;
+        if (toggleMicBtn) toggleMicBtn.disabled = !localStream;
 
-async function startCall() {
-  await ensurePC();
-  const offer = await pc.createOffer();
-  await pc.setLocalDescription(offer);
-  ws.send(JSON.stringify({ type: 'offer', sdp: offer }));
-  setStatus('Calling peer…');
-}
+        // Switch camera should be available when we have a local stream
+        if (switchBtn) switchBtn.disabled = !localStream;
+      }
 
-joinBtn.onclick = async () => {
-  const roomId = roomInput.value.trim();
-  if (!roomId) return alert('Enter Room ID');
-  ws = new WebSocket(SIGNAL_URL);
-  ws.onopen = () => {
-    ws.send(JSON.stringify({ type: 'join', room: roomId }));
-    setStatus('Joined room, waiting for peer…');
-  };
-  ws.onmessage = async (ev) => {
-    const data = JSON.parse(ev.data);
-    if (data.type === 'joined') {
-      // If there is already someone in the room, start calling now.
-      if (data.peers === 2) startCall();
-      // Prepare local media ASAP
-      if (!localStream) {
-        localStream = await getMediaStream();
-        localVideo.srcObject = localStream;
+      function getPreferredVideoConstraints() {
+        return {
+          facingMode: usingFront ? "user" : "environment",
+          width: { ideal: 2560, max: 2560 },
+          height: { ideal: 1440, max: 1440 },
+          frameRate: { ideal: 30, max: 30 },
+        };
+      }
+
+      async function applyHighQualityConstraints(stream) {
+        const videoTrack = stream.getVideoTracks()[0];
+        if (!videoTrack) return;
+        try {
+          await videoTrack.applyConstraints({
+            width: { ideal: 2560, max: 2560 },
+            height: { ideal: 1440, max: 1440 },
+            frameRate: { ideal: 30, max: 30 },
+          });
+        } catch (e) {
+          console.warn("applyConstraints failed", e);
+        }
+        try {
+          // Hint encoder to optimize for motion (higher visual quality for movement)
+          videoTrack.contentHint = "motion";
+        } catch {}
+      }
+
+      async function setSenderHighQualityParams() {
+        if (!pc) return;
+        try {
+          const videoSender = pc
+            .getSenders()
+            .find((s) => s.track && s.track.kind === "video");
+          if (!videoSender) return;
+          const params = videoSender.getParameters() || {};
+          if (!params.encodings || params.encodings.length === 0) {
+            params.encodings = [{}];
+          }
+          // Target ~6 Mbps at 30 fps for 1440p; browsers may cap or adapt as needed
+          params.encodings[0].maxBitrate = 6000000; // bits per second
+          params.encodings[0].maxFramerate = 30;
+          // Prefer keeping resolution over framerate under bandwidth pressure
+          params.degradationPreference = "maintain-resolution";
+          await videoSender.setParameters(params);
+        } catch (e) {
+          console.warn("Failed to set RTCRtpSender params", e);
+        }
+      }
+
+      async function getMediaStream() {
+        // Try requested facingMode with high prefs; if it fails, fall back to default camera.
+        const constraints = {
+          video: getPreferredVideoConstraints(),
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        };
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia(constraints);
+          await applyHighQualityConstraints(stream);
+          return stream;
+        } catch (e) {
+          console.warn(
+            "Preferred constraints failed, falling back to default camera",
+            e
+          );
+          const fallback = await navigator.mediaDevices.getUserMedia({
+            video: true,
+            audio: true,
+          });
+          await applyHighQualityConstraints(fallback);
+          return fallback;
+        }
+      }
+
+      async function ensurePC() {
+        if (pc) return;
+        pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+        pc.onicecandidate = (e) => {
+          if (e.candidate)
+            ws?.send(JSON.stringify({ type: "ice", candidate: e.candidate }));
+        };
+        pc.ontrack = (e) => {
+          remoteVideo.srcObject = e.streams[0];
+        };
+        if (!localStream) {
+          localStream = await getMediaStream();
+          localVideo.srcObject = localStream;
+        }
+        // Add tracks (if not already added)
+        localStream
+          .getTracks()
+          .forEach((track) => pc.addTrack(track, localStream));
+        // Push encoder towards higher quality
+        await setSenderHighQualityParams();
         enableCallControls(true);
       }
-    }
-    if (data.type === 'peer-joined') {
-      if (data.peers === 2) startCall(); // second peer triggered
-    }
-    if (data.type === 'offer') {
-      await ensurePC();
-      await pc.setRemoteDescription(data.sdp);
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      ws.send(JSON.stringify({ type: 'answer', sdp: answer }));
-      setStatus('In call');
-    }
-    if (data.type === 'answer') {
-      await pc.setRemoteDescription(data.sdp);
-      setStatus('In call');
-    }
-    if (data.type === 'ice') {
-      if (pc) {
-        try { await pc.addIceCandidate(data.candidate); } catch (e) { console.warn('ICE add error', e); }
+
+      async function startCall() {
+        await ensurePC();
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        ws.send(JSON.stringify({ type: "offer", sdp: offer }));
+        setStatus("Calling peer…");
       }
-    }
-    if (data.type === 'peer-left') {
-      setStatus('Peer left');
-    }
-  };
-  ws.onerror = (e) => { console.error('WS error', e); setStatus('WS error'); };
-  ws.onclose = () => { cleanup(); setStatus('Disconnected'); };
-};
 
-switchBtn.onclick = async () => {
-  usingFront = !usingFront;
-  const newStream = await getMediaStream();
+      joinBtn.onclick = async () => {
+        const roomId = roomInput.value.trim();
+        if (!roomId) return alert("Enter Room ID");
+        ws = new WebSocket(SIGNAL_URL);
+        ws.onopen = () => {
+          ws.send(JSON.stringify({ type: "join", room: roomId }));
+          setStatus("Joined room, waiting for peer…");
+        };
+        ws.onmessage = async (ev) => {
+          const data = JSON.parse(ev.data);
+          if (data.type === "joined") {
+            // If there is already someone in the room, start calling now.
+            if (data.peers === 2) startCall();
+            // Prepare local media ASAP
+            if (!localStream) {
+              localStream = await getMediaStream();
+              localVideo.srcObject = localStream;
+              enableCallControls(true);
+            }
+          }
+          if (data.type === "peer-joined") {
+            if (data.peers === 2) startCall(); // second peer triggered
+          }
+          if (data.type === "offer") {
+            await ensurePC();
+            await pc.setRemoteDescription(data.sdp);
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+            ws.send(JSON.stringify({ type: "answer", sdp: answer }));
+            setStatus("In call");
+          }
+          if (data.type === "answer") {
+            await pc.setRemoteDescription(data.sdp);
+            setStatus("In call");
+          }
+          if (data.type === "ice") {
+            if (pc) {
+              try {
+                await pc.addIceCandidate(data.candidate);
+              } catch (e) {
+                console.warn("ICE add error", e);
+              }
+            }
+          }
+          if (data.type === "peer-left") {
+            setStatus("Peer left");
+          }
+        };
+        ws.onerror = (e) => {
+          console.error("WS error", e);
+          setStatus("WS error");
+        };
+        ws.onclose = () => {
+          cleanup();
+          setStatus("Disconnected");
+        };
+      };
 
-  // Update local preview
-  localVideo.srcObject = newStream;
+      switchBtn.onclick = async () => {
+        usingFront = !usingFront;
+        const newStream = await getMediaStream();
 
-  // Replace tracks on the fly
-  const newVideo = newStream.getVideoTracks()[0];
-  const newAudio = newStream.getAudioTracks()[0];
-  if (pc) {
-    const vSender = pc.getSenders().find(s => s.track && s.track.kind === 'video');
-    if (vSender && newVideo) await vSender.replaceTrack(newVideo);
+        // Update local preview
+        localVideo.srcObject = newStream;
 
-    const aSender = pc.getSenders().find(s => s.track && s.track.kind === 'audio');
-    if (aSender && newAudio) await aSender.replaceTrack(newAudio);
-  }
+        // Replace tracks on the fly
+        const newVideo = newStream.getVideoTracks()[0];
+        const newAudio = newStream.getAudioTracks()[0];
+        // Apply high-quality constraints and hints to new camera
+        if (newStream) await applyHighQualityConstraints(newStream);
+        if (pc) {
+          const vSender = pc
+            .getSenders()
+            .find((s) => s.track && s.track.kind === "video");
+          if (vSender && newVideo) await vSender.replaceTrack(newVideo);
 
-  // Stop old tracks, swap reference
-  localStream?.getTracks().forEach(t => t.stop());
-  localStream = newStream;
-};
+          const aSender = pc
+            .getSenders()
+            .find((s) => s.track && s.track.kind === "audio");
+          if (aSender && newAudio) await aSender.replaceTrack(newAudio);
+          // Re-apply sender params after track switch
+          await setSenderHighQualityParams();
+        }
 
-toggleCamBtn.onclick = () => {
-  if (!localStream) return;
-  const v = localStream.getVideoTracks()[0];
-  if (!v) return;
-  v.enabled = !v.enabled;
-  toggleCamBtn.textContent = v.enabled ? 'Toggle Cam' : 'Turn Cam Back On';
-};
+        // Stop old tracks, swap reference
+        localStream?.getTracks().forEach((t) => t.stop());
+        localStream = newStream;
+      };
 
-toggleMicBtn.onclick = () => {
-  if (!localStream) return;
-  const a = localStream.getAudioTracks()[0];
-  if (!a) return;
-  a.enabled = !a.enabled;
-  toggleMicBtn.textContent = a.enabled ? 'Toggle Mic' : 'Unmute Mic';
-};
+      toggleCamBtn.onclick = () => {
+        if (!localStream) return;
+        const v = localStream.getVideoTracks()[0];
+        if (!v) return;
+        v.enabled = !v.enabled;
+        toggleCamBtn.textContent = v.enabled
+          ? "Toggle Cam"
+          : "Turn Cam Back On";
+      };
 
-hangBtn.onclick = () => { cleanup(); setStatus('Hung up'); };
+      toggleMicBtn.onclick = () => {
+        if (!localStream) return;
+        const a = localStream.getAudioTracks()[0];
+        if (!a) return;
+        a.enabled = !a.enabled;
+        toggleMicBtn.textContent = a.enabled ? "Toggle Mic" : "Unmute Mic";
+      };
 
-// --- FaceTime-like: drag self-view, swap big/small, PiP ---
-(function enableDraggablePip(){
-  const pip = localVideo;
-  let dragging = false, startX=0, startY=0, startLeft=0, startTop=0;
+      hangBtn.onclick = () => {
+        cleanup();
+        setStatus("Hung up");
+      };
 
-  function setPos(l, t){
-    pip.style.left = l + 'px';
-    pip.style.top = t + 'px';
-    pip.style.right = 'auto';
-    pip.style.bottom = 'auto';
-  }
+      // --- FaceTime-like: drag self-view, swap big/small, PiP ---
+      (function enableDraggablePip() {
+        const pip = localVideo;
+        let dragging = false,
+          startX = 0,
+          startY = 0,
+          startLeft = 0,
+          startTop = 0;
 
-  function onPointerDown(e){
-    dragging = true;
-    pip.setPointerCapture(e.pointerId);
-    pip.style.cursor = 'grabbing';
-    const rect = pip.getBoundingClientRect();
-    startLeft = rect.left;
-    startTop = rect.top;
-    startX = e.clientX;
-    startY = e.clientY;
-  }
-  function onPointerMove(e){
-    if (!dragging) return;
-    const dx = e.clientX - startX;
-    const dy = e.clientY - startY;
-    setPos(startLeft + dx, startTop + dy);
-  }
-  function onPointerUp(e){
-    dragging = false;
-    pip.releasePointerCapture(e.pointerId);
-    pip.style.cursor = 'grab';
-    // snap into bounds of stage
-    const stage = document.getElementById('videoStage').getBoundingClientRect();
-    const me = pip.getBoundingClientRect();
-    let l = Math.max(stage.left+8, Math.min(startLeft + (e.clientX - startX), stage.right - me.width - 8));
-    let t = Math.max(stage.top+8, Math.min(startTop + (e.clientY - startY), stage.bottom - me.height - 8));
-    setPos(l, t);
-  }
+        function setPos(l, t) {
+          pip.style.left = l + "px";
+          pip.style.top = t + "px";
+          pip.style.right = "auto";
+          pip.style.bottom = "auto";
+        }
 
-  pip.addEventListener('pointerdown', onPointerDown);
-  window.addEventListener('pointermove', onPointerMove);
-  window.addEventListener('pointerup', onPointerUp);
-})();
+        function onPointerDown(e) {
+          dragging = true;
+          pip.setPointerCapture(e.pointerId);
+          pip.style.cursor = "grabbing";
+          const rect = pip.getBoundingClientRect();
+          startLeft = rect.left;
+          startTop = rect.top;
+          startX = e.clientX;
+          startY = e.clientY;
+        }
+        function onPointerMove(e) {
+          if (!dragging) return;
+          const dx = e.clientX - startX;
+          const dy = e.clientY - startY;
+          setPos(startLeft + dx, startTop + dy);
+        }
+        function onPointerUp(e) {
+          dragging = false;
+          pip.releasePointerCapture(e.pointerId);
+          pip.style.cursor = "grab";
+          // snap into bounds of stage
+          const stage = document
+            .getElementById("videoStage")
+            .getBoundingClientRect();
+          const me = pip.getBoundingClientRect();
+          let l = Math.max(
+            stage.left + 8,
+            Math.min(
+              startLeft + (e.clientX - startX),
+              stage.right - me.width - 8
+            )
+          );
+          let t = Math.max(
+            stage.top + 8,
+            Math.min(
+              startTop + (e.clientY - startY),
+              stage.bottom - me.height - 8
+            )
+          );
+          setPos(l, t);
+        }
 
-// Swap who is large vs small
-let swapped = false;
-function swapViews(){
-  swapped = !swapped;
-  if (swapped) {
-    // Make local big, remote small
-    localVideo.classList.remove('pip'); localVideo.classList.add('big');
-    remoteVideo.classList.remove('big'); remoteVideo.classList.add('pip');
-  } else {
-    // Make remote big, local small
-    remoteVideo.classList.remove('pip'); remoteVideo.classList.add('big');
-    localVideo.classList.remove('big'); localVideo.classList.add('pip');
-  }
-  // Reset overlay positions when role changes
-  if (!swapped) {
-    localVideo.style.left=''; localVideo.style.top=''; localVideo.style.right='12px'; localVideo.style.bottom='12px';
-  } else {
-    remoteVideo.style.left=''; remoteVideo.style.top=''; remoteVideo.style.right='12px'; remoteVideo.style.bottom='12px';
-  }
-}
-swapBtn.onclick = swapViews;
+        pip.addEventListener("pointerdown", onPointerDown);
+        window.addEventListener("pointermove", onPointerMove);
+        window.addEventListener("pointerup", onPointerUp);
+      })();
 
-// Picture-in-Picture for the big video (whichever currently has 'big')
-pipBtn.onclick = async () => {
-  const big = document.querySelector('video.big');
-  if (!big) return;
-  try {
-    if (document.pictureInPictureElement) {
-      await document.exitPictureInPicture();
-    } else {
-      await big.requestPictureInPicture();
-    }
-  } catch (e) {
-    console.warn('PiP failed', e);
-    alert('Picture-in-Picture may not be supported in this browser.');
-  }
-};
+      // Swap who is large vs small
+      let swapped = false;
+      function swapViews() {
+        swapped = !swapped;
+        if (swapped) {
+          // Make local big, remote small
+          localVideo.classList.remove("pip");
+          localVideo.classList.add("big");
+          remoteVideo.classList.remove("big");
+          remoteVideo.classList.add("pip");
+        } else {
+          // Make remote big, local small
+          remoteVideo.classList.remove("pip");
+          remoteVideo.classList.add("big");
+          localVideo.classList.remove("big");
+          localVideo.classList.add("pip");
+        }
+        // Reset overlay positions when role changes
+        if (!swapped) {
+          localVideo.style.left = "";
+          localVideo.style.top = "";
+          localVideo.style.right = "12px";
+          localVideo.style.bottom = "12px";
+        } else {
+          remoteVideo.style.left = "";
+          remoteVideo.style.top = "";
+          remoteVideo.style.right = "12px";
+          remoteVideo.style.bottom = "12px";
+        }
+      }
+      swapBtn.onclick = swapViews;
 
-// Also let users tap the small self-view to swap quickly
-localVideo.addEventListener('click', () => {
-  if (localVideo.classList.contains('pip')) swapViews();
-});
-remoteVideo.addEventListener('click', () => {
-  if (remoteVideo.classList.contains('pip')) swapViews();
-});
+      // Picture-in-Picture for the big video (whichever currently has 'big')
+      pipBtn.onclick = async () => {
+        const big = document.querySelector("video.big");
+        if (!big) return;
+        try {
+          if (document.pictureInPictureElement) {
+            await document.exitPictureInPicture();
+          } else {
+            await big.requestPictureInPicture();
+          }
+        } catch (e) {
+          console.warn("PiP failed", e);
+          alert("Picture-in-Picture may not be supported in this browser.");
+        }
+      };
 
+      // Also let users tap the small self-view to swap quickly
+      localVideo.addEventListener("click", () => {
+        if (localVideo.classList.contains("pip")) swapViews();
+      });
+      remoteVideo.addEventListener("click", () => {
+        if (remoteVideo.classList.contains("pip")) swapViews();
+      });
 
-blackoutBtn.onclick = () => {
-  // Toggle a black overlay to "turn off" the screen without ending the call
-  const isOn = blackout.classList.toggle('show');
-  blackoutBtn.textContent = isOn ? 'Screen On' : 'Screen Off';
-};
+      blackoutBtn.onclick = () => {
+        // Toggle a black overlay to "turn off" the screen without ending the call
+        const isOn = blackout.classList.toggle("show");
+        blackoutBtn.textContent = isOn ? "Screen On" : "Screen Off";
+      };
 
-blackout.onclick = () => {
-  // Wake up display on tap/click
-  blackout.classList.remove('show');
-  blackoutBtn.textContent = 'Screen Off';
-};
+      blackout.onclick = () => {
+        // Wake up display on tap/click
+        blackout.classList.remove("show");
+        blackoutBtn.textContent = "Screen Off";
+      };
 
-async function goFullscreen(el) {
-  try {
-    if (el.requestFullscreen) await el.requestFullscreen();
-    else if (el.webkitRequestFullscreen) await el.webkitRequestFullscreen();
-    else if (el.msRequestFullscreen) await el.msRequestFullscreen();
-  } catch (e) { console.warn('Fullscreen failed', e); }
-}
+      async function goFullscreen(el) {
+        try {
+          if (el.requestFullscreen) await el.requestFullscreen();
+          else if (el.webkitRequestFullscreen)
+            await el.webkitRequestFullscreen();
+          else if (el.msRequestFullscreen) await el.msRequestFullscreen();
+        } catch (e) {
+          console.warn("Fullscreen failed", e);
+        }
+      }
 
-fsLocalBtn.onclick = () => goFullscreen(localVideo);
-fsRemoteBtn.onclick = () => goFullscreen(remoteVideo);
+      fsLocalBtn.onclick = () => goFullscreen(localVideo);
+      fsRemoteBtn.onclick = () => goFullscreen(remoteVideo);
 
-// Double-click video to toggle fullscreen quickly
-localVideo.addEventListener('dblclick', () => goFullscreen(localVideo));
-remoteVideo.addEventListener('dblclick', () => goFullscreen(remoteVideo));
+      // Double-click video to toggle fullscreen quickly
+      localVideo.addEventListener("dblclick", () => goFullscreen(localVideo));
+      remoteVideo.addEventListener("dblclick", () => goFullscreen(remoteVideo));
 
+      // Initialize camera controls when page loads
+      async function initializeCamera() {
+        try {
+          if (!localStream) {
+            localStream = await getMediaStream();
+            localVideo.srcObject = localStream;
+            enableCallControls(false); // Enable camera controls but not call controls
+          }
+        } catch (e) {
+          console.error("Failed to initialize camera:", e);
+          setStatus("Camera access denied");
+        }
+      }
 
-function cleanup(){
-  enableCallControls(false);
-  if (pc) { pc.getSenders().forEach(s => s.track && s.track.stop()); pc.close(); pc = null; }
-  if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
-  localVideo.srcObject = null;
-  // keep remote last frame visible
-  if (ws && ws.readyState === 1) ws.close();
-  ws = null;
-}
-</script>
+      // Initialize camera on page load and populate room from URL if present
+      document.addEventListener("DOMContentLoaded", () => {
+        const params = new URLSearchParams(location.search);
+        const fromQuery = params.get("room");
+        const fromHash = location.hash
+          ? decodeURIComponent(location.hash.slice(1))
+          : null;
+        if (fromQuery) roomInput.value = fromQuery;
+        else if (fromHash) roomInput.value = fromHash;
+        initializeCamera();
+      });
 
-  <div id="blackout" class="blackout" title="Tap to wake"></div>
-</body>
-</html>
+      // Generate a new random room ID (UUID) and update URL
+      newRoomBtn.onclick = () => {
+        const id = generateUUID();
+        roomInput.value = id;
+        const url = new URL(window.location.href);
+        url.searchParams.set("room", id);
+        history.replaceState(null, "", url.toString());
+        setStatus("New room created");
+      };
 
+      // Copy a shareable link with current room ID
+      copyBtn.onclick = async () => {
+        let roomId = roomInput.value.trim();
+        if (!roomId) {
+          roomId = generateUUID();
+          roomInput.value = roomId;
+          const url = new URL(window.location.href);
+          url.searchParams.set("room", roomId);
+          history.replaceState(null, "", url.toString());
+        }
+        const link = buildRoomLink(roomId);
+        const prev = copyBtn.textContent;
+        const ok = await copyTextToClipboard(link);
+        copyBtn.textContent = ok ? "Copied!" : "Copy Failed";
+        setTimeout(() => (copyBtn.textContent = prev), 1200);
+      };
+
+      function cleanup() {
+        enableCallControls(false);
+        if (pc) {
+          pc.getSenders().forEach((s) => s.track && s.track.stop());
+          pc.close();
+          pc = null;
+        }
+        if (localStream) {
+          localStream.getTracks().forEach((t) => t.stop());
+          localStream = null;
+        }
+        localVideo.srcObject = null;
+        // keep remote last frame visible
+        if (ws && ws.readyState === 1) ws.close();
+        ws = null;
+      }
+    </script>
+
+    <div id="blackout" class="blackout" title="Tap to wake"></div>
+  </body>
 </html>
